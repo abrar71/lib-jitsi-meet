@@ -1,6 +1,6 @@
 {
   "name": "@abrar71/lib-jitsi-meet",
-  "version": "0.0.0",
+  "version": "2114.0.0",
   "description": "JS library for accessing Jitsi server side deployments. Fork of jitsi/lib-jitsi-meet, auto-published from upstream",
   "repository": {
     "type": "git",

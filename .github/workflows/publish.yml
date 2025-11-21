@@ -1,0 +1,154 @@
+name: Sync from upstream and publish to npm
+
+on:
+  # Check upstream regularly
+  schedule:
+    - cron: "0 * * * *" # every hour;
+  # Allow manual runs from the Actions tab
+  workflow_dispatch:
+
+permissions:
+  contents: write   # needed to push branch and tags
+  id-token: write   # required for npm OIDC trusted publishing
+
+jobs:
+  sync-and-publish:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout fork
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # we need full history & tags
+
+      - name: Configure git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Add upstream and fetch
+        run: |
+          git remote add upstream https://github.com/jitsi/lib-jitsi-meet.git
+          git fetch upstream --tags
+
+      - name: Fast-forward master from upstream
+        run: |
+          git checkout master
+          # Try a fast-forward; if your fork has extra commits, it will just skip
+          git merge --ff-only upstream/master || echo "master is not a simple fast-forward; skipping merge"
+          git push origin master
+
+      - name: Determine latest upstream tag
+        id: upstream_tag
+        run: |
+          # Latest tag by creation date that starts with "v"
+          LATEST_UPSTREAM_TAG=$(git tag -l 'v*' --sort=-creatordate | head -n1)
+          echo "Latest upstream tag: $LATEST_UPSTREAM_TAG"
+          if [ -z "$LATEST_UPSTREAM_TAG" ]; then
+            echo "No upstream tags found; nothing to do."
+            exit 0
+          fi
+          echo "tag=$LATEST_UPSTREAM_TAG" >> "$GITHUB_OUTPUT"
+
+      - name: Check if this tag was already published
+        id: published
+        run: |
+          TAG="${{ steps.upstream_tag.outputs.tag }}"
+          if git rev-parse "npm/$TAG" >/dev/null 2>&1; then
+            echo "already=true" >> "$GITHUB_OUTPUT"
+            echo "Tag npm/$TAG already exists; nothing to do."
+          else
+            echo "already=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Stop if already published
+        if: steps.published.outputs.already == 'true'
+        run: echo "Latest upstream tag already marked as published. Skipping."
+
+      - name: Checkout upstream tag
+        if: steps.published.outputs.already == 'false'
+        run: git checkout "${{ steps.upstream_tag.outputs.tag }}"
+
+      - name: Setup Node.js
+        if: steps.published.outputs.already == 'false'
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Ensure recent npm (required for trusted publishing)
+        if: steps.published.outputs.already == 'false'
+        run: npm install -g npm@latest
+
+      - name: Rewrite package metadata for fork
+        if: steps.check_version.outputs.exists != 'true'
+        run: |
+          PKG_NAME="@abrar71/lib-jitsi-meet"
+
+          echo "Setting package name to $PKG_NAME"
+          npm pkg set "name=$PKG_NAME"
+
+          # Make sure it's public and points at your fork repo
+          npm pkg set "publishConfig.access=public"
+          npm pkg set "repository.type=git"
+          npm pkg set "repository.url=git+https://github.com/abrar71/lib-jitsi-meet.git"
+
+          echo "Resulting package.json:"
+          cat package.json
+
+      - name: Install dependencies
+        if: steps.published.outputs.already == 'false'
+        run: npm ci
+
+      - name: Build
+        if: steps.published.outputs.already == 'false'
+        run: npm run build --if-present
+
+      - name: Run tests
+        if: steps.published.outputs.already == 'false'
+        run: npm test --if-present
+
+      - name: Set package version from upstream tag
+        if: steps.published.outputs.already == 'false'
+        run: |
+          TAG="${{ steps.upstream_tag.outputs.tag }}"
+          VERSION="${TAG#v}"   # strip leading "v"
+          echo "Using version $VERSION"
+          # Update package.json version WITHOUT creating a git tag
+          npm version "$VERSION" --no-git-tag-version
+
+      - name: Check if this version already exists on npm
+        if: steps.published.outputs.already == 'false'
+        id: npm_check
+        run: |
+          PKG_NAME=$(node -p "require('./package.json').name")
+          VERSION=$(node -p "require('./package.json').version")
+          echo "Checking npm for $PKG_NAME@$VERSION"
+          if npm view "$PKG_NAME@$VERSION" version >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "Version already on npm; will just tag and skip publish."
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Publish to npm via trusted publisher
+        if: steps.published.outputs.already == 'false' && steps.npm_check.outputs.exists == 'false'
+        run: |
+          PKG_NAME=$(node -p "require('./package.json').name")
+          PUBLISH_ARGS=""
+          case "$PKG_NAME" in
+            @*)
+              # Scoped package; make it public
+              PUBLISH_ARGS="--access public"
+              ;;
+          esac
+          echo "Running: npm publish $PUBLISH_ARGS"
+          # No NODE_AUTH_TOKEN here – npm will use OIDC based on id-token: write
+          npm publish $PUBLISH_ARGS
+
+      - name: Mark this upstream tag as published
+        if: steps.published.outputs.already == 'false'
+        run: |
+          TAG="${{ steps.upstream_tag.outputs.tag }}"
+          git tag "npm/$TAG"
+          git push origin "npm/$TAG"
