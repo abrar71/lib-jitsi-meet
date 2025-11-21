@@ -1,10 +1,13 @@
 {
-  "name": "lib-jitsi-meet",
+  "name": "@abrar71/lib-jitsi-meet",
   "version": "0.0.0",
-  "description": "JS library for accessing Jitsi server side deployments",
+  "description": "JS library for accessing Jitsi server side deployments. Fork of jitsi/lib-jitsi-meet, auto-published from upstream",
   "repository": {
     "type": "git",
-    "url": "git://github.com/jitsi/lib-jitsi-meet"
+    "url": "git+https://github.com/abrar71/lib-jitsi-meet.git"
+  },
+  "publishConfig": {
+    "access": "public"
   },
   "keywords": [
     "jingle",
